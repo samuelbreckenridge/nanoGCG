@@ -58,6 +58,7 @@ class GCGConfig:
     allow_non_ascii: bool = False
     filter_ids: bool = True
     add_space_before_target: bool = False
+    minimize_target_prob: bool = False
     seed: int = None
     verbosity: str = "INFO"
     probe_sampling_config: Optional[ProbeSamplingConfig] = None
@@ -490,6 +491,10 @@ class GCG:
         else:
             loss = torch.nn.functional.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
+        # If minimize_target_prob is True, negate the loss to minimize probability instead of maximizing it
+        if self.config.minimize_target_prob:
+            loss = -loss
+
         optim_ids_onehot_grad = torch.autograd.grad(outputs=[loss], inputs=[optim_ids_onehot])[0]
 
         return optim_ids_onehot_grad
@@ -536,6 +541,11 @@ class GCG:
                     loss = torch.nn.functional.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), reduction="none")
 
                 loss = loss.view(current_batch_size, -1).mean(dim=-1)
+
+                # If minimize_target_prob is True, negate the loss to minimize probability instead of maximizing it
+                if self.config.minimize_target_prob:
+                    loss = -loss
+
                 all_loss.append(loss)
 
                 if self.config.early_stop:
@@ -640,6 +650,10 @@ class GCG:
                             .view(batch_size, -1)
                             .mean(dim=-1)
                         )
+
+                    # If minimize_target_prob is True, negate the loss to minimize probability instead of maximizing it
+                    if self.config.minimize_target_prob:
+                        loss = -loss
 
                     draft_losses.append(loss)
 
