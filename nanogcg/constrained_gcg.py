@@ -295,6 +295,12 @@ class AllowableStringSet:
 
                 all_losses.append(loss)
 
+                # Clean up to prevent memory accumulation
+                del outputs
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+
         all_losses = torch.cat(all_losses)
         best_idx = all_losses.argmin().item()
         best_loss = all_losses[best_idx].item()
@@ -558,7 +564,7 @@ class ConstrainedGCG(GCG):
                     self.target_embeds,
                     self.target_ids,
                     prefix_cache=self.prefix_cache,
-                    batch_size=32,
+                    batch_size=config.batch_size if config.batch_size else 32,
                     minimize_target_prob=config.minimize_target_prob,
                 )
                 best_ids = self.string_set.get_tokenized_string(best_idx)
@@ -581,7 +587,7 @@ class ConstrainedGCG(GCG):
                 self.target_embeds,
                 self.target_ids,
                 prefix_cache=self.prefix_cache,
-                batch_size=32,
+                batch_size=config.batch_size if config.batch_size else 32,
                 minimize_target_prob=config.minimize_target_prob,
             )
             best_ids = self.string_set.get_tokenized_string(best_idx)
