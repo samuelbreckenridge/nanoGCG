@@ -26,7 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 constrained = [
-    "faiss-gpu>=1.7.0",  # Use faiss-gpu for GPU acceleration
+    "faiss-gpu-cu12",  # Use faiss-gpu for GPU acceleration
     "tqdm>=4.60.0",
     "numpy>=1.20.0",
 ]
