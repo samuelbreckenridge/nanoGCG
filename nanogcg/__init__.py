@@ -16,3 +16,4 @@ For more detailed information, see the GitHub repository: https://github.com/Gra
 """
 
 from .gcg import GCGConfig, ProbeSamplingConfig, run
+from .constrained_gcg import ConstrainedGCGConfig, ConstrainedGCG, AllowableStringSet
