@@ -1,21 +1,30 @@
 """Utility to preprocess allowable strings for constrained GCG.
 
 This script:
-1. Loads a set of allowable strings from a text file
+1. Loads a set of allowable strings from a text or JSON file
 2. Tokenizes all strings
 3. Computes mean-pooled embeddings for efficient similarity search
-4. Saves tokenized strings and embeddings to disk
+4. Saves tokenized strings, embeddings, and FAISS index to disk
 
-Usage:
+Usage (text format):
     python -m nanogcg.preprocess_allowable_strings \
         --strings_file allowable_strings.txt \
         --output_dir ./preprocessed \
         --model_name mistralai/Mistral-7B-Instruct-v0.2
+
+Usage (JSON format):
+    python -m nanogcg.preprocess_allowable_strings \
+        --strings_file allowable_strings.json \
+        --input_format json \
+        --output_dir ./preprocessed \
+        --model_name mistralai/Mistral-7B-Instruct-v0.2
+
+For JSON format, the file should contain a list where each item is converted
+to a formatted JSON string representation.
 """
 
 import argparse
 import logging
-import os
 from pathlib import Path
 from typing import List
 
@@ -28,11 +37,33 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def load_strings_from_file(file_path: str) -> List[str]:
-    """Load strings from a text file (one string per line)."""
-    logger.info(f"Loading strings from {file_path}")
-    with open(file_path, 'r') as f:
-        strings = [line.strip() for line in f if line.strip()]
+def load_strings_from_file(file_path: str, input_format: str = "text") -> List[str]:
+    """Load strings from a file.
+
+    Args:
+        file_path: Path to the input file
+        input_format: Format of the input file ("text" or "json")
+            - "text": One string per line
+            - "json": JSON list of strings
+
+    Returns:
+        List of strings
+    """
+    logger.info(f"Loading strings from {file_path} (format: {input_format})")
+
+    if input_format == "text":
+        with open(file_path, 'r') as f:
+            strings = [line.strip() for line in f if line.strip()]
+    elif input_format == "json":
+        import json
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+            if not isinstance(data, list):
+                raise ValueError(f"JSON file must contain a list, got {type(data)}")
+            strings = [json.dumps(item, indent=2) for item in data]
+    else:
+        raise ValueError(f"Unknown input format: {input_format}. Use 'text' or 'json'.")
+
     logger.info(f"Loaded {len(strings)} strings")
     return strings
 
@@ -113,7 +144,15 @@ def main():
         "--strings_file",
         type=str,
         required=True,
-        help="Path to text file with allowable strings (one per line)"
+        help="Path to file with allowable strings"
+    )
+    parser.add_argument(
+        "--input_format",
+        type=str,
+        default="text",
+        choices=["text", "json"],
+        help="Format of input file: 'text' (one string per line) or 'json' (JSON list). "
+             "For JSON, each item is converted to a formatted JSON string."
     )
     parser.add_argument(
         "--output_dir",
@@ -157,7 +196,7 @@ def main():
     embedding_layer = model.get_input_embeddings()
 
     # Load strings
-    strings = load_strings_from_file(args.strings_file)
+    strings = load_strings_from_file(args.strings_file, input_format=args.input_format)
 
     # Tokenize
     tokenized = tokenize_strings(strings, tokenizer)
