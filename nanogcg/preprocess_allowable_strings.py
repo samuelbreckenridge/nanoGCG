@@ -223,9 +223,6 @@ def main():
     # Load strings
     strings = load_strings_from_file(args.strings_file, input_format=args.input_format)
 
-    # Tokenize
-    tokenized = tokenize_strings(strings, tokenizer)
-
     # Save results as we go to minimize RAM usage
     logger.info(f"Saving preprocessed data to {output_dir}")
 
@@ -237,11 +234,19 @@ def main():
             f.write(s + '\n')
     logger.info(f"Saved {len(strings)} strings to {strings_path}")
 
-    # Save tokenized strings (as list of lists)
-    logger.info("Saving tokenized.npy...")
+    # Check if tokenized data already exists
     tokenized_path = output_dir / "tokenized.npy"
-    np.save(tokenized_path, np.array(tokenized, dtype=object), allow_pickle=True)
-    logger.info(f"Saved tokenized strings to {tokenized_path}")
+    if tokenized_path.exists():
+        logger.info(f"Found existing tokenized data at {tokenized_path}, loading...")
+        tokenized = np.load(tokenized_path, allow_pickle=True).tolist()
+        logger.info(f"Loaded {len(tokenized)} tokenized strings")
+    else:
+        # Tokenize
+        tokenized = tokenize_strings(strings, tokenizer)
+        # Save tokenized strings (as list of lists)
+        logger.info("Saving tokenized.npy...")
+        np.save(tokenized_path, np.array(tokenized, dtype=object), allow_pickle=True)
+        logger.info(f"Saved tokenized strings to {tokenized_path}")
 
     # Compute embeddings directly to disk to minimize RAM usage
     embeddings_path = output_dir / "embeddings.npy"
@@ -291,8 +296,10 @@ def main():
             shape=(n_strings, embed_dim)
         )
 
-        # Process in chunks of 1000
-        chunk_size = 1000
+        # Process in chunks - use smaller chunks for large datasets
+        chunk_size = 100 if n_strings > 100000 else 1000
+        logger.info(f"Using chunk size of {chunk_size} for processing")
+
         for i in tqdm(range(0, n_strings, chunk_size), desc="Normalizing"):
             end_idx = min(i + chunk_size, n_strings)
             chunk = embeddings[i:end_idx]
@@ -304,8 +311,9 @@ def main():
             # Write to memory-mapped array
             embeddings_normalized[i:end_idx] = chunk_normalized
 
-            # Periodic cleanup
-            if i % (chunk_size * 10) == 0:
+            # More aggressive cleanup for large datasets
+            del chunk, norms, chunk_normalized
+            if i % (chunk_size * 5) == 0:
                 gc.collect()
 
         embeddings_normalized.flush()
@@ -322,14 +330,15 @@ def main():
                 chunk = np.array(embeddings_normalized[i:end_idx])
                 index.add(chunk)
                 del chunk
-                if i % (chunk_size * 10) == 0:
+                if i % (chunk_size * 5) == 0:
                     gc.collect()
         else:
             # Use IVF index for larger datasets
             if n_strings < 100000:
                 nlist = max(50, n_strings // 1000)  # Medium datasets
             else:
-                nlist = min(4096, max(100, n_strings // 1000))  # Large datasets
+                # Reduce clusters for very large datasets to save memory
+                nlist = min(2048, max(100, n_strings // 2000))  # Large datasets
 
             logger.info(f"Building IVF index with {nlist} clusters for {n_strings} strings")
 
@@ -344,15 +353,15 @@ def main():
             del train_data
             gc.collect()
 
-            # Add in chunks
+            # Add in chunks with aggressive memory management
             logger.info("Adding vectors to index...")
             for i in tqdm(range(0, n_strings, chunk_size), desc="Adding to index"):
                 end_idx = min(i + chunk_size, n_strings)
                 chunk = np.array(embeddings_normalized[i:end_idx])
                 index.add(chunk)
                 del chunk
-                if i % (chunk_size * 10) == 0:
-                    gc.collect()
+                # More frequent garbage collection
+                gc.collect()
 
             # Set number of clusters to probe during search
             index.nprobe = min(10, max(1, nlist // 10))
