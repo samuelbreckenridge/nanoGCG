@@ -258,40 +258,102 @@ def main():
     # Build and save FAISS index
     try:
         import faiss
+        import gc
         logger.info("Building FAISS index...")
-
-        # Normalize embeddings for cosine similarity
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        embeddings_normalized = embeddings / (norms + 1e-8)
 
         embed_dim = embeddings.shape[1]
         n_strings = len(strings)
 
-        # Use IVF index for all dataset sizes
-        # Adjust number of clusters based on dataset size
-        if n_strings < 1000:
-            nlist = max(1, n_strings // 100)  # Very small datasets
-        elif n_strings < 10000:
-            nlist = max(10, n_strings // 100)  # Small datasets
-        elif n_strings < 100000:
-            nlist = max(50, n_strings // 1000)  # Medium datasets
+        # Normalize embeddings in chunks to avoid RAM issues
+        logger.info("Normalizing embeddings in chunks...")
+        normalized_path = output_dir / "embeddings_normalized_temp.npy"
+        embeddings_normalized = np.memmap(
+            normalized_path,
+            dtype=np.float32,
+            mode='w+',
+            shape=(n_strings, embed_dim)
+        )
+
+        # Process in chunks of 1000
+        chunk_size = 1000
+        for i in tqdm(range(0, n_strings, chunk_size), desc="Normalizing"):
+            end_idx = min(i + chunk_size, n_strings)
+            chunk = embeddings[i:end_idx]
+
+            # Normalize chunk
+            norms = np.linalg.norm(chunk, axis=1, keepdims=True)
+            chunk_normalized = chunk / (norms + 1e-8)
+
+            # Write to memory-mapped array
+            embeddings_normalized[i:end_idx] = chunk_normalized
+
+            # Periodic cleanup
+            if i % (chunk_size * 10) == 0:
+                gc.collect()
+
+        embeddings_normalized.flush()
+        logger.info("Normalization complete")
+
+        # Use simpler Flat index for small datasets, IVF for larger
+        if n_strings < 10000:
+            logger.info(f"Building Flat index for {n_strings} strings")
+            index = faiss.IndexFlatIP(embed_dim)
+
+            # Add in chunks to avoid loading all at once
+            for i in tqdm(range(0, n_strings, chunk_size), desc="Adding to index"):
+                end_idx = min(i + chunk_size, n_strings)
+                chunk = np.array(embeddings_normalized[i:end_idx])
+                index.add(chunk)
+                del chunk
+                if i % (chunk_size * 10) == 0:
+                    gc.collect()
         else:
-            nlist = 100  # Large datasets (1M strings)
+            # Use IVF index for larger datasets
+            if n_strings < 100000:
+                nlist = max(50, n_strings // 1000)  # Medium datasets
+            else:
+                nlist = min(4096, max(100, n_strings // 1000))  # Large datasets
 
-        logger.info(f"Building IVF index with {nlist} clusters for {n_strings} strings")
+            logger.info(f"Building IVF index with {nlist} clusters for {n_strings} strings")
 
-        quantizer = faiss.IndexFlatIP(embed_dim)
-        index = faiss.IndexIVFFlat(quantizer, embed_dim, nlist, faiss.METRIC_INNER_PRODUCT)
-        index.train(embeddings_normalized)
-        index.add(embeddings_normalized)
+            quantizer = faiss.IndexFlatIP(embed_dim)
+            index = faiss.IndexIVFFlat(quantizer, embed_dim, nlist, faiss.METRIC_INNER_PRODUCT)
 
-        # Set number of clusters to probe during search
-        index.nprobe = min(10, max(1, nlist // 10))
+            # Train on a subset to save memory (standard practice for large datasets)
+            train_size = min(n_strings, nlist * 100)
+            logger.info(f"Training on {train_size} samples ({100*train_size/n_strings:.1f}% of data)...")
+            train_data = np.array(embeddings_normalized[:train_size])
+            index.train(train_data)
+            del train_data
+            gc.collect()
+
+            # Add in chunks
+            logger.info("Adding vectors to index...")
+            for i in tqdm(range(0, n_strings, chunk_size), desc="Adding to index"):
+                end_idx = min(i + chunk_size, n_strings)
+                chunk = np.array(embeddings_normalized[i:end_idx])
+                index.add(chunk)
+                del chunk
+                if i % (chunk_size * 10) == 0:
+                    gc.collect()
+
+            # Set number of clusters to probe during search
+            index.nprobe = min(10, max(1, nlist // 10))
+            logger.info(f"Index configured with nprobe={index.nprobe}")
 
         # Save FAISS index
+        logger.info("Saving FAISS index to disk...")
         faiss_path = output_dir / "faiss.index"
         faiss.write_index(index, str(faiss_path))
-        logger.info(f"FAISS IVF index saved to {faiss_path} (nprobe={index.nprobe})")
+        logger.info(f"FAISS index saved to {faiss_path}")
+
+        # Clean up temporary normalized embeddings file
+        del embeddings_normalized
+        del index
+        gc.collect()
+        if normalized_path.exists():
+            normalized_path.unlink()
+            logger.info("Cleaned up temporary files")
 
     except ImportError:
         logger.warning("FAISS not available. Skipping index creation. Install with: pip install faiss-cpu")
