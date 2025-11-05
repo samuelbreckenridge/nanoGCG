@@ -89,7 +89,8 @@ def compute_embeddings(
     model,
     embedding_layer,
     device: str = "cuda",
-    batch_size: int = 32
+    batch_size: int = 32,
+    output_path: str = None
 ) -> np.ndarray:
     """Compute mean-pooled embeddings for all tokenized strings.
 
@@ -99,6 +100,7 @@ def compute_embeddings(
         embedding_layer: The model's embedding layer
         device: Device to use for computation
         batch_size: Batch size for processing
+        output_path: If provided, write embeddings directly to disk using memory mapping
 
     Returns:
         Array of shape (n_strings, embedding_dim) with mean-pooled embeddings
@@ -109,8 +111,18 @@ def compute_embeddings(
     embed_dim = embedding_layer.weight.shape[1]
     n_strings = len(tokenized)
 
-    # Pre-allocate the output array to avoid memory issues with large lists
-    all_embeddings = np.zeros((n_strings, embed_dim), dtype=np.float32)
+    # Use memory-mapped array to write directly to disk and avoid RAM issues
+    if output_path:
+        logger.info(f"Writing embeddings directly to disk at {output_path}")
+        all_embeddings = np.memmap(
+            output_path,
+            dtype=np.float32,
+            mode='w+',
+            shape=(n_strings, embed_dim)
+        )
+    else:
+        # Fallback to in-memory array
+        all_embeddings = np.zeros((n_strings, embed_dim), dtype=np.float32)
 
     # Convert to tensors and pad
     max_len = max(len(ids) for ids in tokenized)
@@ -136,8 +148,17 @@ def compute_embeddings(
             # Mean pool over the actual (non-padded) tokens
             for j, length in enumerate(lengths):
                 mean_embed = embeds[j, :length, :].mean(dim=0)  # (embed_dim,)
-                # Write directly to pre-allocated array
+                # Write directly to array (in memory or memory-mapped to disk)
                 all_embeddings[i + j] = mean_embed.cpu().numpy()
+
+        # Flush to disk periodically if using memory mapping
+        if output_path and i % (batch_size * 10) == 0:
+            all_embeddings.flush()
+
+    # Final flush if using memory mapping
+    if output_path:
+        all_embeddings.flush()
+        logger.info("Embeddings written to disk")
 
     return all_embeddings
 
@@ -205,16 +226,7 @@ def main():
     # Tokenize
     tokenized = tokenize_strings(strings, tokenizer)
 
-    # Compute embeddings
-    embeddings = compute_embeddings(
-        tokenized,
-        model,
-        embedding_layer,
-        device=args.device,
-        batch_size=args.batch_size
-    )
-
-    # Save results
+    # Save results as we go to minimize RAM usage
     logger.info(f"Saving preprocessed data to {output_dir}")
 
     # Save original strings
@@ -231,10 +243,16 @@ def main():
     np.save(tokenized_path, np.array(tokenized, dtype=object), allow_pickle=True)
     logger.info(f"Saved tokenized strings to {tokenized_path}")
 
-    # Save embeddings
-    logger.info("Saving embeddings.npy...")
+    # Compute embeddings directly to disk to minimize RAM usage
     embeddings_path = output_dir / "embeddings.npy"
-    np.save(embeddings_path, embeddings)
+    embeddings = compute_embeddings(
+        tokenized,
+        model,
+        embedding_layer,
+        device=args.device,
+        batch_size=args.batch_size,
+        output_path=str(embeddings_path)
+    )
     logger.info(f"Saved embeddings to {embeddings_path}")
 
     # Build and save FAISS index
