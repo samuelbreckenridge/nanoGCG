@@ -353,15 +353,18 @@ def main():
             del train_data
             gc.collect()
 
-            # Add in chunks with aggressive memory management
+            # Add in chunks with balanced memory management
             logger.info("Adding vectors to index...")
-            for i in tqdm(range(0, n_strings, chunk_size), desc="Adding to index"):
-                end_idx = min(i + chunk_size, n_strings)
+            # Use larger chunks for adding (500) to reduce GC overhead
+            add_chunk_size = 500
+            for i in tqdm(range(0, n_strings, add_chunk_size), desc="Adding to index"):
+                end_idx = min(i + add_chunk_size, n_strings)
                 chunk = np.array(embeddings_normalized[i:end_idx])
                 index.add(chunk)
                 del chunk
-                # More frequent garbage collection
-                gc.collect()
+                # Only GC every 50k vectors (~every 100 iterations)
+                if i % 50000 == 0:
+                    gc.collect()
 
             # Set number of clusters to probe during search
             index.nprobe = min(10, max(1, nlist // 10))
