@@ -286,38 +286,51 @@ def main():
         embed_dim = embeddings.shape[1]
         n_strings = len(strings)
 
-        # Normalize embeddings in chunks to avoid RAM issues
-        logger.info("Normalizing embeddings in chunks...")
-        normalized_path = output_dir / "embeddings_normalized_temp.npy"
-        embeddings_normalized = np.memmap(
-            normalized_path,
-            dtype=np.float32,
-            mode='w+',
-            shape=(n_strings, embed_dim)
-        )
+        # Check if normalized embeddings already exist
+        normalized_path = output_dir / "embeddings_normalized.npy"
 
         # Process in chunks - use smaller chunks for large datasets
         chunk_size = 100 if n_strings > 100000 else 1000
-        logger.info(f"Using chunk size of {chunk_size} for processing")
 
-        for i in tqdm(range(0, n_strings, chunk_size), desc="Normalizing"):
-            end_idx = min(i + chunk_size, n_strings)
-            chunk = embeddings[i:end_idx]
+        if normalized_path.exists():
+            logger.info(f"Found existing normalized embeddings at {normalized_path}, loading...")
+            embeddings_normalized = np.memmap(
+                normalized_path,
+                dtype=np.float32,
+                mode='r',
+                shape=(n_strings, embed_dim)
+            )
+            logger.info(f"Loaded normalized embeddings with shape {embeddings_normalized.shape}")
+        else:
+            # Normalize embeddings in chunks to avoid RAM issues
+            logger.info("Normalizing embeddings in chunks...")
+            logger.info(f"Using chunk size of {chunk_size} for processing")
 
-            # Normalize chunk
-            norms = np.linalg.norm(chunk, axis=1, keepdims=True)
-            chunk_normalized = chunk / (norms + 1e-8)
+            embeddings_normalized = np.memmap(
+                normalized_path,
+                dtype=np.float32,
+                mode='w+',
+                shape=(n_strings, embed_dim)
+            )
 
-            # Write to memory-mapped array
-            embeddings_normalized[i:end_idx] = chunk_normalized
+            for i in tqdm(range(0, n_strings, chunk_size), desc="Normalizing"):
+                end_idx = min(i + chunk_size, n_strings)
+                chunk = embeddings[i:end_idx]
 
-            # More aggressive cleanup for large datasets
-            del chunk, norms, chunk_normalized
-            if i % (chunk_size * 5) == 0:
-                gc.collect()
+                # Normalize chunk
+                norms = np.linalg.norm(chunk, axis=1, keepdims=True)
+                chunk_normalized = chunk / (norms + 1e-8)
 
-        embeddings_normalized.flush()
-        logger.info("Normalization complete")
+                # Write to memory-mapped array
+                embeddings_normalized[i:end_idx] = chunk_normalized
+
+                # More aggressive cleanup for large datasets
+                del chunk, norms, chunk_normalized
+                if i % (chunk_size * 5) == 0:
+                    gc.collect()
+
+            embeddings_normalized.flush()
+            logger.info(f"Normalization complete, saved to {normalized_path}")
 
         # Use simpler Flat index for small datasets, IVF for larger
         if n_strings < 10000:
@@ -376,13 +389,11 @@ def main():
         faiss.write_index(index, str(faiss_path))
         logger.info(f"FAISS index saved to {faiss_path}")
 
-        # Clean up temporary normalized embeddings file
+        # Clean up memory (but keep normalized embeddings file for reuse)
         del embeddings_normalized
         del index
         gc.collect()
-        if normalized_path.exists():
-            normalized_path.unlink()
-            logger.info("Cleaned up temporary files")
+        logger.info("Cleaned up memory")
 
     except ImportError:
         logger.warning("FAISS not available. Skipping index creation. Install with: pip install faiss-cpu")
