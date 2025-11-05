@@ -249,7 +249,17 @@ def main():
     # Check if embeddings already exist
     if embeddings_path.exists():
         logger.info(f"Found existing embeddings at {embeddings_path}, loading...")
-        embeddings = np.load(embeddings_path, mmap_mode='r')
+        # Get embedding dimension from model to load with memmap
+        embed_dim = embedding_layer.weight.shape[1]
+        n_strings = len(tokenized)
+
+        # Load using memmap (matches how we saved it)
+        embeddings = np.memmap(
+            embeddings_path,
+            dtype=np.float32,
+            mode='r',
+            shape=(n_strings, embed_dim)
+        )
         logger.info(f"Loaded embeddings with shape {embeddings.shape}")
     else:
         embeddings = compute_embeddings(
