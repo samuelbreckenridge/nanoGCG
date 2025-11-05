@@ -104,7 +104,13 @@ def compute_embeddings(
         Array of shape (n_strings, embedding_dim) with mean-pooled embeddings
     """
     logger.info("Computing embeddings...")
-    all_embeddings = []
+
+    # Get embedding dimension from the model
+    embed_dim = embedding_layer.weight.shape[1]
+    n_strings = len(tokenized)
+
+    # Pre-allocate the output array to avoid memory issues with large lists
+    all_embeddings = np.zeros((n_strings, embed_dim), dtype=np.float32)
 
     # Convert to tensors and pad
     max_len = max(len(ids) for ids in tokenized)
@@ -128,14 +134,12 @@ def compute_embeddings(
             embeds = embedding_layer(batch_tensor)  # (batch_size, max_len, embed_dim)
 
             # Mean pool over the actual (non-padded) tokens
-            batch_embeddings = []
             for j, length in enumerate(lengths):
                 mean_embed = embeds[j, :length, :].mean(dim=0)  # (embed_dim,)
-                batch_embeddings.append(mean_embed.cpu().numpy())
+                # Write directly to pre-allocated array
+                all_embeddings[i + j] = mean_embed.cpu().numpy()
 
-            all_embeddings.extend(batch_embeddings)
-
-    return np.array(all_embeddings, dtype=np.float32)
+    return all_embeddings
 
 
 def main():
@@ -214,18 +218,24 @@ def main():
     logger.info(f"Saving preprocessed data to {output_dir}")
 
     # Save original strings
+    logger.info("Saving strings.txt...")
     strings_path = output_dir / "strings.txt"
     with open(strings_path, 'w') as f:
         for s in strings:
             f.write(s + '\n')
+    logger.info(f"Saved {len(strings)} strings to {strings_path}")
 
     # Save tokenized strings (as list of lists)
+    logger.info("Saving tokenized.npy...")
     tokenized_path = output_dir / "tokenized.npy"
     np.save(tokenized_path, np.array(tokenized, dtype=object), allow_pickle=True)
+    logger.info(f"Saved tokenized strings to {tokenized_path}")
 
     # Save embeddings
+    logger.info("Saving embeddings.npy...")
     embeddings_path = output_dir / "embeddings.npy"
     np.save(embeddings_path, embeddings)
+    logger.info(f"Saved embeddings to {embeddings_path}")
 
     # Build and save FAISS index
     try:
