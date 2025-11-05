@@ -245,15 +245,22 @@ def main():
 
     # Compute embeddings directly to disk to minimize RAM usage
     embeddings_path = output_dir / "embeddings.npy"
-    embeddings = compute_embeddings(
-        tokenized,
-        model,
-        embedding_layer,
-        device=args.device,
-        batch_size=args.batch_size,
-        output_path=str(embeddings_path)
-    )
-    logger.info(f"Saved embeddings to {embeddings_path}")
+
+    # Check if embeddings already exist
+    if embeddings_path.exists():
+        logger.info(f"Found existing embeddings at {embeddings_path}, loading...")
+        embeddings = np.load(embeddings_path, mmap_mode='r')
+        logger.info(f"Loaded embeddings with shape {embeddings.shape}")
+    else:
+        embeddings = compute_embeddings(
+            tokenized,
+            model,
+            embedding_layer,
+            device=args.device,
+            batch_size=args.batch_size,
+            output_path=str(embeddings_path)
+        )
+        logger.info(f"Saved embeddings to {embeddings_path}")
 
     # Build and save FAISS index
     try:
