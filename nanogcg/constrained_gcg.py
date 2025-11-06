@@ -38,13 +38,8 @@ class ConstrainedGCGConfig(GCGConfig):
     All GCGConfig parameters are inherited. Additional parameters:
 
     Args:
-        use_discrete_search: If True, use discrete gradient-guided search over transactions.
-            Computes gradient, moves in gradient direction, finds nearest transactions, evaluates.
-            If False, use continuous GCG with periodic projection (legacy mode).
-        discrete_search_width: Number of candidate transactions to evaluate per iteration (discrete mode only)
-        discrete_learning_rate: Step size for gradient updates in embedding space (discrete mode only)
-        projection_frequency: Project to nearest allowable string every k iterations (legacy mode)
-        distance_metric: How to measure distance to allowable strings (legacy mode)
+        projection_frequency: Project to nearest allowable string every k iterations
+        distance_metric: How to measure distance to allowable strings
             - "embedding": Pure embedding-based (fastest)
             - "loss": Pure loss-based (most accurate, slowest)
             - "hybrid": Embedding to filter + loss to refine (recommended)
@@ -52,11 +47,8 @@ class ConstrainedGCGConfig(GCGConfig):
         use_loss_refinement: Whether to evaluate loss on retrieved candidates (for hybrid mode)
         preprocessed_dir: Path to directory with preprocessed allowable strings
             Should contain: strings.txt, tokenized.npy, embeddings.npy
-        project_final_result: Whether to project the final result before returning (legacy mode)
+        project_final_result: Whether to project the final result before returning
     """
-    use_discrete_search: bool = True
-    discrete_search_width: int = 64
-    discrete_learning_rate: float = 0.1
     projection_frequency: int = 10
     distance_metric: Literal["embedding", "loss", "hybrid"] = "hybrid"
     faiss_k: int = 100
@@ -431,18 +423,6 @@ class ConstrainedGCG(GCG):
         self.after_embeds = after_embeds
         self.target_embeds = target_embeds
 
-        # DISCRETE GRADIENT-GUIDED SEARCH MODE
-        if config.use_discrete_search:
-            # Initialize buffer to get starting transaction
-            buffer = self.init_buffer()
-            return self._run_discrete_search(
-                optim_ids=buffer.get_best_ids(),
-                before_embeds=before_embeds,
-                after_embeds=after_embeds,
-                target_embeds=target_embeds,
-                target_ids=target_ids,
-            )
-
         # Initialize probe sampling if needed
         if config.probe_sampling_config:
             # Same as parent class
@@ -565,114 +545,6 @@ class ConstrainedGCG(GCG):
             )
 
         return result
-
-    def _run_discrete_search(
-        self,
-        optim_ids: Tensor,
-        before_embeds: Tensor,
-        after_embeds: Tensor,
-        target_embeds: Tensor,
-        target_ids: Tensor,
-    ) -> GCGResult:
-        """Run discrete gradient-guided search over allowable transactions.
-
-        Instead of continuous token-level GCG, this:
-        1. Computes gradient with respect to current transaction embedding
-        2. Updates embedding in gradient direction
-        3. Finds nearest transactions to updated embedding via FAISS
-        4. Evaluates loss on those transactions
-        5. Keeps best transaction and repeats
-
-        Args:
-            optim_ids: Initial transaction token IDs, shape (1, seq_len)
-            before_embeds: Embeddings before the transaction
-            after_embeds: Embeddings after the transaction
-            target_embeds: Target embeddings
-            target_ids: Target token IDs
-
-        Returns:
-            GCGResult with best transaction and optimization trajectory
-        """
-        config = self.config
-        model = self.model
-        tokenizer = self.tokenizer
-        embedding_layer = self.embedding_layer
-
-        losses = []
-        optim_strings = []
-        best_loss = float('inf')
-        best_ids = optim_ids.clone()
-
-        logger.info(f"Running discrete gradient-guided search for {config.num_steps} steps...")
-        logger.info(f"  Search width: {config.discrete_search_width} candidates per iteration")
-        logger.info(f"  Learning rate: {config.discrete_learning_rate}")
-
-        for step in tqdm(range(config.num_steps), desc="Discrete search"):
-            # 1. Compute gradient with respect to current transaction embedding
-            optim_ids_onehot_grad = self.compute_token_gradient(optim_ids)
-
-            with torch.no_grad():
-                # 2. Compute current embedding and apply gradient
-                current_embeds = embedding_layer(optim_ids)  # (1, seq_len, embed_dim)
-                mean_current_embed = current_embeds.mean(dim=1)  # (1, embed_dim)
-
-                # Apply gradient to mean embedding (move in direction that reduces loss)
-                mean_grad = optim_ids_onehot_grad.mean(dim=0)  # (vocab_size,)
-
-                # Convert one-hot gradient to embedding space gradient
-                # This is an approximation: we update the mean embedding directly
-                embedding_grad = embedding_layer.weight.t() @ mean_grad  # (embed_dim,)
-
-                # Update embedding in gradient direction
-                updated_embed = mean_current_embed - config.discrete_learning_rate * embedding_grad.unsqueeze(0)
-
-                # Normalize for cosine similarity search
-                updated_embed = updated_embed / (updated_embed.norm(dim=1, keepdim=True) + 1e-8)
-                updated_embed_np = updated_embed.cpu().numpy().astype(np.float32)
-
-                # 3. Find nearest transactions to updated embedding via FAISS
-                if self.string_set.use_faiss:
-                    distances, indices = self.string_set.index.search(updated_embed_np, config.discrete_search_width)
-                    candidate_indices = indices[0]
-                else:
-                    # Brute-force search
-                    similarities = (self.string_set.embeddings_normalized @ updated_embed_np.T).squeeze()
-                    candidate_indices = np.argpartition(similarities, -config.discrete_search_width)[-config.discrete_search_width:]
-
-                # 4. Evaluate loss on all candidate transactions
-                best_candidate_idx, candidate_loss = self.string_set.find_nearest_by_loss(
-                    candidate_indices,
-                    before_embeds,
-                    after_embeds,
-                    target_embeds,
-                    target_ids,
-                    prefix_cache=self.prefix_cache if config.use_prefix_cache else None,
-                    batch_size=config.batch_size if config.batch_size else 32,
-                    minimize_target_prob=config.minimize_target_prob,
-                )
-
-                # 5. Update current transaction to best candidate
-                optim_ids = self.string_set.get_tokenized_string(best_candidate_idx).unsqueeze(0)
-
-                # Track progress
-                losses.append(candidate_loss)
-                optim_str = tokenizer.batch_decode(optim_ids)[0]
-                optim_strings.append(optim_str)
-
-                # Update best if improved
-                if candidate_loss < best_loss:
-                    best_loss = candidate_loss
-                    best_ids = optim_ids.clone()
-                    logger.info(f"Step {step}: New best loss {best_loss:.4f}")
-
-        logger.info(f"Discrete search complete. Best loss: {best_loss:.4f}")
-
-        return GCGResult(
-            best_loss=best_loss,
-            best_string=tokenizer.batch_decode(best_ids)[0],
-            losses=losses,
-            strings=optim_strings,
-        )
 
     def _project_to_allowable_set(self, current_ids: Tensor) -> Tensor:
         """Project current suffix to nearest allowable string.
