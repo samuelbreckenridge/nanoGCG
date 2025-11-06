@@ -92,22 +92,17 @@ class AllowableStringSet:
         tokenized_data = np.load(preprocessed_dir / "tokenized.npy", allow_pickle=True)
         self.tokenized = [torch.tensor(ids, dtype=torch.long) for ids in tokenized_data]
 
-        # Load embeddings (handle both regular .npy and memory-mapped files)
+        # Load embeddings using memmap (matches how we saved it in preprocessing)
         embeddings_path = preprocessed_dir / "embeddings.npy"
-        try:
-            # Try loading as regular .npy file first
-            self.embeddings = np.load(embeddings_path, allow_pickle=False)
-        except ValueError:
-            # If it fails, it's a memory-mapped file - load with memmap
-            # Get shape from metadata or infer from embedding layer
-            embed_dim = self.embedding_layer.weight.shape[1]
-            n_strings = len(self.strings)
-            self.embeddings = np.memmap(
-                embeddings_path,
-                dtype=np.float32,
-                mode='r',
-                shape=(n_strings, embed_dim)
-            )
+        embed_dim = self.embedding_layer.weight.shape[1]
+        n_strings = len(self.strings)
+
+        self.embeddings = np.memmap(
+            embeddings_path,
+            dtype=np.float32,
+            mode='r',
+            shape=(n_strings, embed_dim)
+        )
         logger.info(f"Loaded {len(self.strings)} allowable strings with embeddings shape {self.embeddings.shape}")
 
         # Normalize embeddings for cosine similarity
