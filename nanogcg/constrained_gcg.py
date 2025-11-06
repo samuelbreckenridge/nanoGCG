@@ -83,19 +83,21 @@ class AllowableStringSet:
 
         preprocessed_dir = Path(preprocessed_dir)
 
-        # Load strings
+        # Load tokenized strings first (this is the source of truth for count)
         logger.info(f"Loading allowable strings from {preprocessed_dir}")
-        with open(preprocessed_dir / "strings.txt", 'r') as f:
-            self.strings = [line.strip() for line in f]
-
-        # Load tokenized strings
         tokenized_data = np.load(preprocessed_dir / "tokenized.npy", allow_pickle=True)
         self.tokenized = [torch.tensor(ids, dtype=torch.long) for ids in tokenized_data]
+
+        # Get actual number of strings from tokenized data
+        n_strings = len(tokenized_data)
+
+        # Load strings (may have more lines if JSON formatted with indentation)
+        # We'll reconstruct from tokenized data to be safe
+        self.strings = [self.tokenizer.decode(ids) for ids in tokenized_data]
 
         # Load embeddings using memmap (matches how we saved it in preprocessing)
         embeddings_path = preprocessed_dir / "embeddings.npy"
         embed_dim = self.embedding_layer.weight.shape[1]
-        n_strings = len(self.strings)
 
         self.embeddings = np.memmap(
             embeddings_path,
