@@ -38,9 +38,6 @@ class ConstrainedGCGConfig(GCGConfig):
     All GCGConfig parameters are inherited. Additional parameters:
 
     Args:
-        eval_all_candidates: If True, skip GCG optimization and evaluate loss on all
-            allowable strings directly. If False, use standard GCG with periodic projection.
-        eval_batch_size: Batch size for loss evaluation when eval_all_candidates=True.
         projection_frequency: Project to nearest allowable string every k iterations
         distance_metric: How to measure distance to allowable strings
             - "embedding": Pure embedding-based (fastest)
@@ -52,8 +49,6 @@ class ConstrainedGCGConfig(GCGConfig):
             Should contain: strings.txt, tokenized.npy, embeddings.npy
         project_final_result: Whether to project the final result before returning
     """
-    eval_all_candidates: bool = False
-    eval_batch_size: int = 64
     projection_frequency: int = 10
     distance_metric: Literal["embedding", "loss", "hybrid"] = "hybrid"
     faiss_k: int = 100
@@ -255,14 +250,9 @@ class AllowableStringSet:
 
         candidate_ids_tensor = torch.stack(padded_candidates).to(self.device)
 
-        # Compute losses in batches with progress bar
+        # Compute losses in batches
         prefix_cache_batch = []
-        n_batches = (n_candidates + batch_size - 1) // batch_size
-
-        for i in tqdm(range(0, n_candidates, batch_size),
-                      total=n_batches,
-                      desc="Evaluating candidates",
-                      disable=n_candidates < batch_size * 10):  # Hide progress bar for small evaluations
+        for i in range(0, n_candidates, batch_size):
             batch_ids = candidate_ids_tensor[i:i + batch_size]
             current_batch_size = batch_ids.shape[0]
 
@@ -372,8 +362,8 @@ class ConstrainedGCG(GCG):
     ) -> GCGResult:
         """Run constrained GCG optimization.
 
-        If eval_all_candidates=True, directly evaluates all allowable strings.
-        Otherwise, runs GCG with periodic projection to the allowable string set.
+        This extends the base GCG.run() method by adding periodic projection
+        to the allowable string set.
 
         Args:
             messages: Conversation messages or string
@@ -382,6 +372,9 @@ class ConstrainedGCG(GCG):
         Returns:
             GCGResult with losses and optimized strings (projected to allowable set)
         """
+        # Call parent's setup (everything before the optimization loop)
+        # We'll need to replicate the parent's run method with projection added
+
         model = self.model
         tokenizer = self.tokenizer
         config = self.config
@@ -420,46 +413,15 @@ class ConstrainedGCG(GCG):
         ]
 
         # Compute the KV Cache for tokens that appear before the optimized tokens
-        prefix_cache = None
         if config.use_prefix_cache:
             with torch.no_grad():
                 output = model(inputs_embeds=before_embeds, use_cache=True)
-                prefix_cache = output.past_key_values
+                self.prefix_cache = output.past_key_values
 
         self.target_ids = target_ids
         self.before_embeds = before_embeds
         self.after_embeds = after_embeds
         self.target_embeds = target_embeds
-        self.prefix_cache = prefix_cache
-
-        # DIRECT EVALUATION MODE: Evaluate all candidates
-        if config.eval_all_candidates:
-            logger.info(f"Evaluating all {len(self.string_set.tokenized)} allowable strings...")
-            n_total = len(self.string_set.tokenized)
-            all_indices = np.arange(n_total)
-
-            best_idx, best_loss = self.string_set.find_nearest_by_loss(
-                all_indices,
-                before_embeds,
-                after_embeds,
-                target_embeds,
-                target_ids,
-                prefix_cache=prefix_cache,
-                batch_size=config.eval_batch_size,
-                minimize_target_prob=config.minimize_target_prob,
-            )
-
-            best_ids = self.string_set.get_tokenized_string(best_idx).unsqueeze(0)
-            best_str = tokenizer.batch_decode(best_ids)[0]
-
-            logger.info(f"Best candidate: index {best_idx}, loss {best_loss:.4f}")
-
-            return GCGResult(
-                best_loss=best_loss,
-                best_string=best_str,
-                losses=[best_loss],
-                strings=[best_str],
-            )
 
         # Initialize probe sampling if needed
         if config.probe_sampling_config:
