@@ -452,6 +452,9 @@ class ConstrainedGCG(GCG):
         best_projected_loss = float('inf')
         best_projected_ids = None
 
+        # Track previous projection to detect when stuck on same transaction
+        prev_projected_ids = None
+
         # Main optimization loop with projection
         for step in tqdm(range(config.num_steps)):
             # Standard GCG step: compute gradient and sample candidates
@@ -509,17 +512,30 @@ class ConstrainedGCG(GCG):
                 logger.info(f"Step {step + 1}: Projecting to allowable set...")
                 optim_ids = self._project_to_allowable_set(optim_ids)
 
-                # Re-evaluate loss after projection
-                projected_loss = self._evaluate_loss(optim_ids)
-                buffer.add(projected_loss, optim_ids)
-
-                # Track best projected result
-                if projected_loss < best_projected_loss:
-                    best_projected_loss = projected_loss
-                    best_projected_ids = optim_ids.clone()
-                    logger.info(f"  Projected loss: {projected_loss:.4f} (new best!)")
+                # Check if we projected to the same transaction as last time
+                if prev_projected_ids is not None and torch.equal(optim_ids, prev_projected_ids):
+                    logger.info("  Stuck on same transaction! Restarting from random transaction...")
+                    # Sample a random transaction to restart search
+                    random_idx = np.random.randint(0, len(self.string_set.tokenized))
+                    optim_ids = self.string_set.get_tokenized_string(random_idx).unsqueeze(0)
+                    projected_loss = self._evaluate_loss(optim_ids)
+                    logger.info(f"  Random restart from transaction {random_idx}, loss: {projected_loss:.4f}")
                 else:
-                    logger.info(f"  Projected loss: {projected_loss:.4f}")
+                    # Re-evaluate loss after projection
+                    projected_loss = self._evaluate_loss(optim_ids)
+
+                    # Track best projected result
+                    if projected_loss < best_projected_loss:
+                        best_projected_loss = projected_loss
+                        best_projected_ids = optim_ids.clone()
+                        logger.info(f"  Projected loss: {projected_loss:.4f} (new best!)")
+                    else:
+                        logger.info(f"  Projected loss: {projected_loss:.4f}")
+
+                # Update previous projection for next iteration
+                prev_projected_ids = optim_ids.clone()
+
+                buffer.add(projected_loss, optim_ids)
 
             optim_ids = buffer.get_best_ids()
             optim_str = tokenizer.batch_decode(optim_ids)[0]
