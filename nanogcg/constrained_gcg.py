@@ -91,9 +91,9 @@ class AllowableStringSet:
         # Get actual number of strings from tokenized data
         n_strings = len(tokenized_data)
 
-        # Load strings (may have more lines if JSON formatted with indentation)
-        # We'll reconstruct from tokenized data to be safe
-        self.strings = [self.tokenizer.decode(ids) for ids in tokenized_data]
+        # Don't decode strings - not needed for the attack, only tokenized versions are used
+        # This saves significant time
+        self.strings = None  # We'll use n_strings for counts instead
 
         # Load embeddings using memmap (matches how we saved it in preprocessing)
         embeddings_path = preprocessed_dir / "embeddings.npy"
@@ -105,7 +105,7 @@ class AllowableStringSet:
             mode='r',
             shape=(n_strings, embed_dim)
         )
-        logger.info(f"Loaded {len(self.strings)} allowable strings with embeddings shape {self.embeddings.shape}")
+        logger.info(f"Loaded {n_strings} allowable strings with embeddings shape {self.embeddings.shape}")
 
         # Normalize embeddings for cosine similarity
         norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
@@ -130,7 +130,7 @@ class AllowableStringSet:
         """Build FAISS index for fast approximate nearest neighbor search."""
         logger.info("Building FAISS index...")
         embed_dim = self.embeddings_normalized.shape[1]
-        n_strings = len(self.strings)
+        n_strings = len(self.tokenized)
 
         # Use IVF index for all dataset sizes
         # Adjust number of clusters based on dataset size
@@ -192,7 +192,7 @@ class AllowableStringSet:
         # Compute query embedding
         query_embed = self._embed_tokens(query_ids)
 
-        k = min(k, len(self.strings))  # Can't retrieve more than total
+        k = min(k, len(self.tokenized))  # Can't retrieve more than total
 
         if self.use_faiss:
             # FAISS search (returns similarities for METRIC_INNER_PRODUCT)
@@ -588,7 +588,7 @@ class ConstrainedGCG(GCG):
         elif config.distance_metric == "loss":
             # Pure loss-based: most accurate but slowest
             # Retrieve more candidates and evaluate all
-            k = min(config.faiss_k * 5, len(self.string_set.strings))
+            k = min(config.faiss_k * 5, len(self.string_set.tokenized))
             indices, _ = self.string_set.find_nearest_by_embedding(current_ids, k=k)
 
             best_idx, _ = self.string_set.find_nearest_by_loss(
