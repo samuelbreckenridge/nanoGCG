@@ -448,6 +448,10 @@ class ConstrainedGCG(GCG):
         losses = []
         optim_strings = []
 
+        # Track best projected result separately
+        best_projected_loss = float('inf')
+        best_projected_ids = None
+
         # Main optimization loop with projection
         for step in tqdm(range(config.num_steps)):
             # Standard GCG step: compute gradient and sample candidates
@@ -509,7 +513,13 @@ class ConstrainedGCG(GCG):
                 projected_loss = self._evaluate_loss(optim_ids)
                 buffer.add(projected_loss, optim_ids)
 
-                logger.info(f"  Projected loss: {projected_loss:.4f}")
+                # Track best projected result
+                if projected_loss < best_projected_loss:
+                    best_projected_loss = projected_loss
+                    best_projected_ids = optim_ids.clone()
+                    logger.info(f"  Projected loss: {projected_loss:.4f} (new best!)")
+                else:
+                    logger.info(f"  Projected loss: {projected_loss:.4f}")
 
             optim_ids = buffer.get_best_ids()
             optim_str = tokenizer.batch_decode(optim_ids)[0]
@@ -521,9 +531,20 @@ class ConstrainedGCG(GCG):
                 logger.info("Early stopping due to finding a perfect match.")
                 break
 
-        # Final projection (if enabled)
-        if config.project_final_result:
-            logger.info("Projecting final result to allowable set...")
+        # Return best projected result found during optimization
+        if best_projected_ids is not None:
+            # We found at least one projected result during optimization
+            logger.info(f"Returning best projected result with loss: {best_projected_loss:.4f}")
+            result = GCGResult(
+                best_loss=best_projected_loss,
+                best_string=tokenizer.batch_decode(best_projected_ids)[0],
+                losses=losses,
+                strings=optim_strings,
+            )
+        else:
+            # No projections happened during optimization (shouldn't happen with default config)
+            # Fall back to projecting the buffer's best result
+            logger.warning("No projected results found during optimization. Projecting final result...")
             best_ids = buffer.get_best_ids()
             best_ids = self._project_to_allowable_set(best_ids)
             best_loss = self._evaluate_loss(best_ids)
@@ -532,14 +553,6 @@ class ConstrainedGCG(GCG):
             result = GCGResult(
                 best_loss=best_loss,
                 best_string=best_str,
-                losses=losses,
-                strings=optim_strings,
-            )
-        else:
-            min_loss_index = losses.index(min(losses))
-            result = GCGResult(
-                best_loss=losses[min_loss_index],
-                best_string=optim_strings[min_loss_index],
                 losses=losses,
                 strings=optim_strings,
             )
