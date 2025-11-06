@@ -95,21 +95,21 @@ class AllowableStringSet:
         # This saves significant time
         self.strings = None  # We'll use n_strings for counts instead
 
-        # Load embeddings using memmap (matches how we saved it in preprocessing)
-        embeddings_path = preprocessed_dir / "embeddings.npy"
+        # Load normalized embeddings using memmap to avoid loading into RAM
+        # We only need normalized embeddings for cosine similarity search
         embed_dim = self.embedding_layer.weight.shape[1]
+        normalized_path = preprocessed_dir / "embeddings_normalized.npy"
 
-        self.embeddings = np.memmap(
-            embeddings_path,
-            dtype=np.float32,
-            mode='r',
-            shape=(n_strings, embed_dim)
-        )
-        logger.info(f"Loaded {n_strings} allowable strings with embeddings shape {self.embeddings.shape}")
-
-        # Normalize embeddings for cosine similarity
-        norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
-        self.embeddings_normalized = self.embeddings / (norms + 1e-8)
+        if normalized_path.exists():
+            self.embeddings_normalized = np.memmap(
+                normalized_path,
+                dtype=np.float32,
+                mode='r',
+                shape=(n_strings, embed_dim)
+            )
+            logger.info(f"Loaded {n_strings} normalized embeddings from {normalized_path}")
+        else:
+            raise ValueError("Attack requires normalized embeddings, run preprocess_allowable_strings")
 
         # Build or load search index
         self.use_faiss = use_faiss and FAISS_AVAILABLE
