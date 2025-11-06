@@ -236,38 +236,35 @@ class AllowableStringSet:
             Tuple of (best_index, best_loss)
         """
         n_candidates = len(candidate_indices)
+        all_losses = []
 
-        # Track best across all batches
-        best_overall_idx = None
-        best_overall_loss = float('inf')
+        # Prepare candidates
+        candidate_ids_list = [self.tokenized[idx] for idx in candidate_indices]
+
+        # Pad to same length
+        max_len = max(len(ids) for ids in candidate_ids_list)
+        padded_candidates = []
+        for ids in candidate_ids_list:
+            if len(ids) < max_len:
+                # Pad with tokenizer's pad token (or 0 if not available)
+                pad_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+                padded = torch.cat([ids, torch.full((max_len - len(ids),), pad_id, dtype=torch.long)])
+            else:
+                padded = ids
+            padded_candidates.append(padded)
+
+        candidate_ids_tensor = torch.stack(padded_candidates).to(self.device)
 
         # Compute losses in batches with progress bar
-        # Key: pad per-batch to avoid loading all candidates into RAM
         prefix_cache_batch = []
         n_batches = (n_candidates + batch_size - 1) // batch_size
-        pad_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
 
-        for batch_start in tqdm(range(0, n_candidates, batch_size),
-                                total=n_batches,
-                                desc="Evaluating candidates",
-                                disable=n_candidates < batch_size * 10):
-            batch_end = min(batch_start + batch_size, n_candidates)
-            batch_indices = candidate_indices[batch_start:batch_end]
-            current_batch_size = len(batch_indices)
-
-            # Load and pad only this batch (not all candidates!)
-            batch_candidate_ids = [self.tokenized[idx] for idx in batch_indices]
-            batch_max_len = max(len(ids) for ids in batch_candidate_ids)
-
-            padded_batch = []
-            for ids in batch_candidate_ids:
-                if len(ids) < batch_max_len:
-                    padded = torch.cat([ids, torch.full((batch_max_len - len(ids),), pad_id, dtype=torch.long)])
-                else:
-                    padded = ids
-                padded_batch.append(padded)
-
-            batch_ids = torch.stack(padded_batch).to(self.device)
+        for i in tqdm(range(0, n_candidates, batch_size),
+                      total=n_batches,
+                      desc="Evaluating candidates",
+                      disable=n_candidates < batch_size * 10):  # Hide progress bar for small evaluations
+            batch_ids = candidate_ids_tensor[i:i + batch_size]
+            current_batch_size = batch_ids.shape[0]
 
             with torch.no_grad():
                 # Embed the candidate suffixes
@@ -317,22 +314,19 @@ class AllowableStringSet:
                 if minimize_target_prob:
                     loss = -loss
 
-                # Find best in this batch
-                batch_best_idx = loss.argmin().item()
-                batch_best_loss = loss[batch_best_idx].item()
-
-                # Update overall best
-                if batch_best_loss < best_overall_loss:
-                    best_overall_loss = batch_best_loss
-                    best_overall_idx = batch_indices[batch_best_idx]
+                all_losses.append(loss)
 
                 # Clean up to prevent memory accumulation
-                del outputs, logits, input_embeds, optim_embeds, batch_ids, padded_batch, batch_candidate_ids, loss
+                del outputs
                 import gc
                 gc.collect()
                 torch.cuda.empty_cache()
 
-        return best_overall_idx, best_overall_loss
+        all_losses = torch.cat(all_losses)
+        best_idx = all_losses.argmin().item()
+        best_loss = all_losses[best_idx].item()
+
+        return candidate_indices[best_idx], best_loss
 
     def get_tokenized_string(self, index: int) -> Tensor:
         """Get tokenized string at given index."""
