@@ -48,6 +48,8 @@ class ConstrainedGCGConfig(GCGConfig):
         preprocessed_dir: Path to directory with preprocessed allowable strings
             Should contain: strings.txt, tokenized.npy, embeddings.npy
         project_final_result: Whether to project the final result before returning
+        disallowed_indices: Optional list of indices to exclude from the search.
+            These transactions will never be selected as candidates.
     """
     projection_frequency: int = 10
     distance_metric: Literal["embedding", "loss", "hybrid"] = "hybrid"
@@ -55,6 +57,7 @@ class ConstrainedGCGConfig(GCGConfig):
     use_loss_refinement: bool = True
     preprocessed_dir: str = None
     project_final_result: bool = True
+    disallowed_indices: Optional[List[int]] = None
 
 
 class AllowableStringSet:
@@ -66,6 +69,7 @@ class AllowableStringSet:
         model: transformers.PreTrainedModel,
         tokenizer: transformers.PreTrainedTokenizer,
         use_faiss: bool = True,
+        disallowed_indices: Optional[List[int]] = None,
     ):
         """Initialize the allowable string set.
 
@@ -75,11 +79,17 @@ class AllowableStringSet:
             model: The transformer model (used for embedding and loss computation)
             tokenizer: The model's tokenizer
             use_faiss: Whether to use FAISS for fast search (if available)
+            disallowed_indices: Optional list of indices to exclude from search
         """
         self.model = model
         self.tokenizer = tokenizer
         self.device = model.device
         self.embedding_layer = model.get_input_embeddings()
+
+        # Store disallowed indices as a set for O(1) lookup
+        self.disallowed_indices = set(disallowed_indices) if disallowed_indices else set()
+        if self.disallowed_indices:
+            logger.info(f"Disallowing {len(self.disallowed_indices)} indices from search")
 
         preprocessed_dir = Path(preprocessed_dir)
 
@@ -186,8 +196,8 @@ class AllowableStringSet:
 
         Returns:
             Tuple of (indices, distances) where:
-                - indices: np.ndarray of shape (k,) with indices of nearest strings
-                - distances: np.ndarray of shape (k,) with cosine similarities
+                - indices: np.ndarray of shape (≤k,) with indices of nearest strings
+                - distances: np.ndarray of shape (≤k,) with cosine similarities
         """
         # Compute query embedding
         query_embed = self._embed_tokens(query_ids)
@@ -197,10 +207,22 @@ class AllowableStringSet:
         if self.use_faiss:
             # FAISS search (returns similarities for METRIC_INNER_PRODUCT)
             distances, indices = self.index.search(query_embed, k)
-            return indices[0], distances[0]
+
+            # Filter out disallowed indices
+            if self.disallowed_indices:
+                mask = np.array([idx not in self.disallowed_indices for idx in indices[0]])
+                return indices[0][mask], distances[0][mask]
+            else:
+                return indices[0], distances[0]
         else:
             # Brute-force search using numpy
             similarities = (self.embeddings_normalized @ query_embed.T).squeeze()
+
+            # Mask out disallowed indices
+            if self.disallowed_indices:
+                for idx in self.disallowed_indices:
+                    similarities[idx] = -np.inf
+
             top_k_indices = np.argpartition(similarities, -k)[-k:]
             top_k_indices = top_k_indices[np.argsort(-similarities[top_k_indices])]
             return top_k_indices, similarities[top_k_indices]
@@ -352,6 +374,7 @@ class ConstrainedGCG(GCG):
             model,
             tokenizer,
             use_faiss=FAISS_AVAILABLE,
+            disallowed_indices=config.disallowed_indices,
         )
         logger.info("Allowable string set initialized.")
 
