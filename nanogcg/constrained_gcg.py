@@ -47,7 +47,6 @@ class ConstrainedGCGConfig(GCGConfig):
         use_loss_refinement: Whether to evaluate loss on retrieved candidates (for hybrid mode)
         preprocessed_dir: Path to directory with preprocessed allowable strings
             Should contain: strings.txt, tokenized.npy, embeddings.npy
-        project_final_result: Whether to project the final result before returning
         disallowed_indices: Optional list of indices to exclude from the search.
             These transactions will never be selected as candidates.
     """
@@ -56,7 +55,6 @@ class ConstrainedGCGConfig(GCGConfig):
     faiss_k: int = 100
     use_loss_refinement: bool = True
     preprocessed_dir: str = None
-    project_final_result: bool = True
     disallowed_indices: Optional[List[int]] = None
 
 

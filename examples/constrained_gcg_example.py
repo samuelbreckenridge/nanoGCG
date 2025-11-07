@@ -91,7 +91,6 @@ def main():
         faiss_k=100,
         use_loss_refinement=True,
         preprocessed_dir=args.preprocessed_dir,
-        project_final_result=True,
         verbosity="INFO",
     )
 

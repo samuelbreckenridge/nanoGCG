@@ -66,7 +66,6 @@ config = ConstrainedGCGConfig(
     faiss_k=100,  # Retrieve top-100 candidates
     use_loss_refinement=True,
     preprocessed_dir="./preprocessed_strings",
-    project_final_result=True,
 )
 
 # Run attack
